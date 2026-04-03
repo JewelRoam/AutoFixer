@@ -5,7 +5,7 @@ This script implements the full 4-phase lifecycle:
   Phase 1: Git history distillation (offline, optional)
   Phase 2: Forward pass — exception interception → diagnosis → patch generation
   Phase 3: Evaluation — apply patch, run tests or ask developer
-  Phase 4: Backward — experience sedimentation on failure
+  Phase 4: Backward — autograd loss.backward() + optimizer.step()
 
 Usage:
     # Start interactive REPL
@@ -39,7 +39,7 @@ from autofixer.model.bugfix_agent import (
     read_tensor_element,
     parse_diff_patch,
 )
-from autofixer.optim.apply_patch import apply_patch_to_file, append_experience
+from autofixer.optim.apply_patch import apply_patch_to_file
 from autofixer.tools.git_miner import distill_repo_to_experience_rows
 from autofixer.env_interceptor.sys_excepthook import (
     install_hook,
@@ -149,7 +149,6 @@ def _load_saved_experience(agent: AutoFixerAgent) -> bool:
         return False
 
     import json as _json
-    import math
     with open(shape_file, "r") as f:
         shape = _json.loads(f.read())
 
@@ -159,7 +158,6 @@ def _load_saved_experience(agent: AutoFixerAgent) -> bool:
     tensor.st_tensor_uid = tensor_uid
 
     # Verify a few storage files actually exist
-    element_count = math.prod(shape)
     digits = list(str(0))
     first_file = os.path.join(tensor_dir, "storage", os.path.join(*digits), "data")
     if not os.path.isfile(first_file):
@@ -194,47 +192,51 @@ def phase1_distill(repo_path: str, agent: AutoFixerAgent) -> None:
     print(f"  Experience loaded: shape {list(agent.moe.experience.shape)}")
 
 
-def phase2_forward(snapshot: ContextSnapshot, agent: AutoFixerAgent) -> str:
-    """Phase 2: Forward pass — generate fix patch from crash context."""
+def phase2_forward(snapshot: ContextSnapshot, agent: AutoFixerAgent) -> tuple:
+    """Phase 2: Forward pass — generate fix patch from crash context.
+
+    Returns:
+        (raw_output_text, output_tensor, tmpdir_path): raw text, symbolic
+        tensor (kept alive for backward), and tmpdir path for cleanup.
+    """
     print("[Phase 2] Running forward pass (experience retrieval + LLM generation)...")
     exp = agent.get_experience()
     print(f"  Experience: {list(exp.shape)} ({exp.shape[0]} entries)")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = os.path.realpath(tmpdir)
-        input_tensor = snapshot_to_tensor(snapshot, relative_to=tmpdir)
+    tmpdir = tempfile.mkdtemp()
+    tmpdir = os.path.realpath(tmpdir)
+    input_tensor = snapshot_to_tensor(snapshot, relative_to=tmpdir)
 
-        # Show what we're sending to the model
-        input_text = read_tensor_element(input_tensor, 0)
-        print(f"  Input context: {len(input_text)} chars")
-        # Show first few lines of the context
-        preview_lines = input_text.splitlines()[:5]
-        for line in preview_lines:
-            print(f"    {line[:100]}")
-        if len(input_text.splitlines()) > 5:
-            print(f"    ... ({len(input_text.splitlines())} lines total)")
+    # Show what we're sending to the model
+    input_text = read_tensor_element(input_tensor, 0)
+    print(f"  Input context: {len(input_text)} chars")
+    preview_lines = input_text.splitlines()[:5]
+    for line in preview_lines:
+        print(f"    {line[:100]}")
+    if len(input_text.splitlines()) > 5:
+        print(f"    ... ({len(input_text.splitlines())} lines total)")
 
-        print(f"  Calling LLM (model={os.environ.get('LLM_MODEL', '?')})...")
-        output, selected_indexes = agent(input_tensor)
+    print(f"  Calling LLM (model={os.environ.get('LLM_MODEL', '?')})...")
+    output, selected_indexes = agent(input_tensor)
 
-        # Show which experience entries were retrieved
-        if selected_indexes:
-            print(f"  Retrieved experience indexes: {selected_indexes}")
+    # Show which experience entries were retrieved
+    if selected_indexes:
+        print(f"  Retrieved experience indexes: {selected_indexes}")
 
-        raw_output = read_tensor_element(output, 0)
-        print(f"  LLM output: {len(raw_output)} chars")
-        if raw_output.strip():
-            preview = raw_output[:300]
-            print(f"  ---")
-            for line in preview.splitlines():
-                print(f"  {line}")
-            if len(raw_output) > 300:
-                print(f"  ... ({len(raw_output)} chars total)")
-            print(f"  ---")
-        else:
-            print(f"  (empty or whitespace-only output)")
+    raw_output = read_tensor_element(output, 0)
+    print(f"  LLM output: {len(raw_output)} chars")
+    if raw_output.strip():
+        preview = raw_output[:300]
+        print(f"  ---")
+        for line in preview.splitlines():
+            print(f"  {line}")
+        if len(raw_output) > 300:
+            print(f"  ... ({len(raw_output)} chars total)")
+        print(f"  ---")
+    else:
+        print(f"  (empty or whitespace-only output)")
 
-        return raw_output
+    return raw_output, output, tmpdir
 
 
 def phase3_evaluate(
@@ -268,11 +270,21 @@ def phase3_evaluate(
 
 def phase4_backward(
     snapshot: ContextSnapshot,
+    output_tensor: torch.Tensor,
     agent: AutoFixerAgent,
     optimizer: StSGD,
+    tmpdir: str,
 ) -> None:
-    """Phase 4: Backward pass — sediment experience from developer's fix."""
-    print("[Phase 4] Record correct fix as experience?")
+    """Phase 4: Backward pass via autograd — compute loss, backprop, update experience.
+
+    Instead of manually appending experience, we:
+    1. Get the correct diff from the developer
+    2. Wrap it as an expected_tensor
+    3. loss = agent.compute_loss(output_tensor, expected_tensor)
+    4. loss.backward()  → symbolic gradients propagate through StMoe
+    5. optimizer.step() → StSGD patches experience tensor (cold-start fills empty slots)
+    """
+    print("[Phase 4] Record correct fix as experience (autograd backward)?")
     response = input("  Provide diff? [f(ile)/p(aste)/s(kip)]: ").strip().lower()
 
     if response in ("s", "skip", ""):
@@ -307,12 +319,28 @@ def phase4_backward(
         print("  Empty diff, skipped.")
         return
 
-    new_exp = append_experience(
-        agent.moe.experience, snapshot, correct_diff, DATA_DIR
-    )
-    agent.moe.experience = new_exp
-    agent.moe.experience.requires_grad_(True)
-    _save_experience_marker(new_exp)
+    # ── Autograd backward pass ──
+    print("  Computing loss (edit distance ratio)...")
+    expected_tensor = make_tensor([correct_diff], tmpdir)
+
+    optimizer.zero_grad()
+    loss = agent.compute_loss(output_tensor, expected_tensor)
+    loss_val = loss.item()
+    print(f"  Loss = {loss_val:.4f}")
+
+    if loss_val == 0.0:
+        print("  Loss is 0 (output matches expected). No update needed.")
+        return
+
+    print("  Running loss.backward() (symbolic gradient propagation)...")
+    loss.backward()
+
+    print("  Running optimizer.step() (patching experience tensor)...")
+    optimizer.step()
+    stats = optimizer.get_last_step_stats()
+    print(f"  Optimizer stats: {stats}")
+
+    _save_experience_marker(agent.moe.experience)
     print(f"  Experience updated: shape {list(agent.moe.experience.shape)}")
 
 
@@ -388,14 +416,14 @@ def _handle_snapshot(
     print(f"\n  Exception: {snapshot.exception_type}")
     print(f"  File: {snapshot.target_file}:{snapshot.crash_line_num}")
 
-    raw_output = phase2_forward(snapshot, agent)
+    raw_output, output_tensor, tmpdir = phase2_forward(snapshot, agent)
     success = phase3_evaluate(raw_output, snapshot.target_file)
 
     if success:
         print("\n[Result] Fix successful! No backward pass needed (loss=0).")
     else:
         print()
-        phase4_backward(snapshot, agent, optimizer)
+        phase4_backward(snapshot, output_tensor, agent, optimizer, tmpdir)
 
 
 # ── REPL ──────────────────────────────────────────────────────────────

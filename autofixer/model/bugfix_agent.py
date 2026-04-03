@@ -3,6 +3,14 @@
 This module converts ContextSnapshot into symbolic tensors, delegates to
 the StMoe mixed-expert layer for experience-based retrieval + LLM generation,
 and outputs DiffPatch text.
+
+Autograd lifecycle:
+    output, indexes = agent(input_tensor)
+    expected = make_tensor([correct_patch], tmpdir)
+    loss = agent.compute_loss(output, expected)
+    loss.backward()       # symbolic gradients flow through StMoe → experience
+    optimizer.step()      # StSGD patches experience tensor in-place
+    optimizer.zero_grad()
 """
 
 import os
@@ -15,6 +23,9 @@ import torch.nn as nn
 
 from experience.symbolic_tensor.module.st_moe import StMoeModule
 from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
+from experience.symbolic_tensor.function.get_edit_distance_ratio import (
+    get_edit_distance_ratio,
+)
 
 from autofixer.context_snapshot import ContextSnapshot
 
@@ -83,8 +94,12 @@ the bug. Output ONLY the patch, no explanation."""
 class AutoFixerAgent(nn.Module):
     """Experience-based bug fix agent built on StMoeModule.
 
+    The experience tensor is pre-allocated at `[num_experience_slots, 3]` with
+    empty-string storage.  StSGD's cold-start mechanism auto-fills empty slots
+    during `optimizer.step()` — no manual append needed.
+
     Args:
-        num_experience_slots: Number of experience entries to allocate.
+        num_experience_slots: Number of experience entries to pre-allocate.
         topk: Number of experiences to retrieve per input.
         task_prompt: Override the default task prompt for the LLM.
         llm_env: Environment variables for the LLM client.
@@ -128,3 +143,23 @@ class AutoFixerAgent(nn.Module):
             selected_indexes tracks which experience entries were used.
         """
         return self.moe(input_tensor)
+
+    @staticmethod
+    def compute_loss(
+        output: torch.Tensor, expected: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute symbolic edit-distance loss between output and expected tensors.
+
+        This is the entry point to the autograd backward graph.  Calling
+        `loss.backward()` will propagate symbolic diff-gradients through
+        StMoe and into the experience tensor.
+
+        Args:
+            output: Symbolic tensor from forward() containing generated patches.
+            expected: Symbolic tensor containing the correct/human-verified patches.
+
+        Returns:
+            Scalar loss tensor (mean edit-distance ratio).
+        """
+        ratios = get_edit_distance_ratio(output, expected)
+        return ratios.mean()

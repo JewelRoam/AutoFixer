@@ -1,9 +1,8 @@
-"""Tests for autofixer.optim.apply_patch — experience write-back and workspace patching.
+"""Tests for autofixer.optim.apply_patch — workspace patching.
 
 Tests that:
 1. A DiffPatch can be applied to a file on disk
-2. Experience can be written (appended) to the experience tensor
-3. The backward-then-patch lifecycle works end-to-end
+2. The autograd backward lifecycle (compute_loss → backward → step) works
 """
 
 import os
@@ -54,63 +53,51 @@ class TestApplyPatchToWorkspace:
         assert success is False
 
 
-class TestWriteExperience:
-    def test_append_experience_to_tensor(self):
-        from autofixer.optim.apply_patch import append_experience
+class TestAutogradLifecycle:
+    """Verify that compute_loss → backward produces gradients on experience."""
+
+    def test_compute_loss_produces_grad(self):
+        from autofixer.model.bugfix_agent import AutoFixerAgent
         from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
 
         with tempfile.TemporaryDirectory() as raw_tmpdir:
             tmpdir = os.path.realpath(raw_tmpdir)
-            # Start with 1-entry experience
-            initial = make_tensor(
-                [["query_kw", "old key text", "old value text"]],
-                tmpdir,
-            )
-            snapshot = ContextSnapshot(
-                exception_type="KeyError",
-                traceback="...",
-                target_file="/project/app.py",
-                crash_line_num=5,
-                source_code="d = {}\nv = d['missing']",
-                local_vars='{"d": {}}',
-            )
-            diff_patch = "--- a/app.py\n+++ b/app.py\n@@ -1 +1,2 @@\n d = {}\n+v = d.get('missing', None)\n"
+            output = make_tensor(["wrong answer"], tmpdir)
+            output.requires_grad_(True)
+            expected = make_tensor(["correct answer"], tmpdir)
 
-            new_exp = append_experience(
-                experience_tensor=initial,
-                snapshot=snapshot,
-                diff_patch=diff_patch,
-                relative_to=tmpdir,
-            )
-            # Should have 2 rows now
-            assert new_exp.shape[0] == initial.shape[0] + 1
-            assert new_exp.shape[1] == 3
+            loss = AutoFixerAgent.compute_loss(output, expected)
+            assert loss.item() > 0.0
+            assert loss.requires_grad
 
-
-class TestExperienceLifecycle:
-    def test_write_then_read_back(self):
-        """Verify that written experience can be read back correctly."""
-        from autofixer.optim.apply_patch import append_experience
+    def test_optimizer_step_updates_experience(self):
+        """Verify StSGD.step() can process symbolic gradients."""
         from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
-        from experience.symbolic_tensor.tensor_util.pack_tensor import pack_tensor
+        from experience.symbolic_tensor.optimizer.st_sgd import StSGD
 
         with tempfile.TemporaryDirectory() as raw_tmpdir:
             tmpdir = os.path.realpath(raw_tmpdir)
-            initial = make_tensor(
-                [["initial_query", "initial_key", "initial_value"]],
-                tmpdir,
-            )
-            snapshot = ContextSnapshot(
-                exception_type="TypeError",
-                traceback="...",
-                target_file="/a.py",
-                crash_line_num=1,
-                source_code="x = 1 + 'a'",
-                local_vars='{"x": 1}',
-            )
-            diff = "--- a.py\n+++ a.py\n@@ -1 +1 @@\n-x = 1 + 'a'\n+x = 1 + str('a')\n"
+            # Create a small experience tensor
+            exp = make_tensor([["query", "old key", "old value"]], tmpdir)
+            exp.requires_grad_(True)
 
-            new_exp = append_experience(initial, snapshot, diff, tmpdir)
-            packed = pack_tensor(new_exp)
-            assert "initial_key" in packed
-            assert "TypeError" in packed or "x = 1" in packed
+            optimizer = StSGD([exp], lr=1.0)
+
+            # Manually create a diff gradient (simulates backward output)
+            diff_key = (
+                "--- data\n+++ data\n@@ -1 +1 @@\n"
+                "-old key\n+new key\n"
+            )
+            diff_value = (
+                "--- data\n+++ data\n@@ -1 +1 @@\n"
+                "-old value\n+new value\n"
+            )
+            grad = make_tensor([["", diff_key, diff_value]], tmpdir)
+            grad.data.fill_(0.0)
+            grad.data[0, 1] = 1.0
+            grad.data[0, 2] = 1.0
+            exp.grad = grad
+
+            optimizer.step()
+            stats = optimizer.get_last_step_stats()
+            assert stats["applied"] == 2

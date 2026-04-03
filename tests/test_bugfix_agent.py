@@ -11,7 +11,6 @@ import os
 import sys
 import tempfile
 import pytest
-import torch
 
 # Add experience to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "experience"))
@@ -91,6 +90,41 @@ class TestDiffPatchOutput:
         from autofixer.model.bugfix_agent import parse_diff_patch
         assert parse_diff_patch("") is None
         assert parse_diff_patch("no diff here") is None
+
+
+class TestComputeLoss:
+    def test_compute_loss_identical_returns_zero(self):
+        from autofixer.model.bugfix_agent import AutoFixerAgent
+        from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
+        with tempfile.TemporaryDirectory() as raw_tmpdir:
+            tmpdir = os.path.realpath(raw_tmpdir)
+            output = make_tensor(["hello world"], tmpdir)
+            output.requires_grad_(True)
+            expected = make_tensor(["hello world"], tmpdir)
+            loss = AutoFixerAgent.compute_loss(output, expected)
+            assert loss.item() == 0.0
+
+    def test_compute_loss_different_returns_positive(self):
+        from autofixer.model.bugfix_agent import AutoFixerAgent
+        from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
+        with tempfile.TemporaryDirectory() as raw_tmpdir:
+            tmpdir = os.path.realpath(raw_tmpdir)
+            output = make_tensor(["wrong patch"], tmpdir)
+            output.requires_grad_(True)
+            expected = make_tensor(["correct patch"], tmpdir)
+            loss = AutoFixerAgent.compute_loss(output, expected)
+            assert loss.item() > 0.0
+
+    def test_compute_loss_returns_scalar(self):
+        from autofixer.model.bugfix_agent import AutoFixerAgent
+        from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
+        with tempfile.TemporaryDirectory() as raw_tmpdir:
+            tmpdir = os.path.realpath(raw_tmpdir)
+            output = make_tensor(["abc"], tmpdir)
+            output.requires_grad_(True)
+            expected = make_tensor(["xyz"], tmpdir)
+            loss = AutoFixerAgent.compute_loss(output, expected)
+            assert loss.dim() == 0  # scalar
 
 
 class TestAgentWithOptimizer:
