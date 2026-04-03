@@ -144,12 +144,43 @@ def phase1_distill(repo_path: str, agent: AutoFixerAgent) -> None:
 def phase2_forward(snapshot: ContextSnapshot, agent: AutoFixerAgent) -> str:
     """Phase 2: Forward pass — generate fix patch from crash context."""
     print("[Phase 2] Running forward pass (experience retrieval + LLM generation)...")
+    exp = agent.get_experience()
+    print(f"  Experience: {list(exp.shape)} ({exp.shape[0]} entries)")
+
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = os.path.realpath(tmpdir)
         input_tensor = snapshot_to_tensor(snapshot, relative_to=tmpdir)
+
+        # Show what we're sending to the model
+        input_text = read_tensor_element(input_tensor, 0)
+        print(f"  Input context: {len(input_text)} chars")
+        # Show first few lines of the context
+        preview_lines = input_text.splitlines()[:5]
+        for line in preview_lines:
+            print(f"    {line[:100]}")
+        if len(input_text.splitlines()) > 5:
+            print(f"    ... ({len(input_text.splitlines())} lines total)")
+
+        print(f"  Calling LLM (model={os.environ.get('LLM_MODEL', '?')})...")
         output, selected_indexes = agent(input_tensor)
+
+        # Show which experience entries were retrieved
+        if selected_indexes:
+            print(f"  Retrieved experience indexes: {selected_indexes}")
+
         raw_output = read_tensor_element(output, 0)
-        print(f"  Raw output ({len(raw_output)} chars)")
+        print(f"  LLM output: {len(raw_output)} chars")
+        if raw_output.strip():
+            preview = raw_output[:300]
+            print(f"  ---")
+            for line in preview.splitlines():
+                print(f"  {line}")
+            if len(raw_output) > 300:
+                print(f"  ... ({len(raw_output)} chars total)")
+            print(f"  ---")
+        else:
+            print(f"  (empty or whitespace-only output)")
+
         return raw_output
 
 
@@ -188,21 +219,40 @@ def phase4_backward(
     optimizer: StSGD,
 ) -> None:
     """Phase 4: Backward pass — sediment experience from developer's fix."""
-    print("[Phase 4] Recording experience from this fix attempt...")
-    print("  Paste the correct diff (end with EOF on a new line), or 'skip':")
-    first_line = input("  ").strip()
-    if first_line.lower() == "skip":
-        print("  Skipped experience recording.")
+    print("[Phase 4] Record correct fix as experience?")
+    response = input("  Provide diff? [f(ile)/p(aste)/s(kip)]: ").strip().lower()
+
+    if response in ("s", "skip", ""):
+        print("  Skipped.")
         return
 
-    # Collect until EOF
-    lines = [first_line]
-    while True:
-        line = input("  ")
-        if line.strip() == "EOF":
-            break
-        lines.append(line)
-    correct_diff = "\n".join(lines)
+    if response in ("f", "file"):
+        diff_path = input("  Path to diff file: ").strip()
+        if not os.path.isfile(diff_path):
+            print(f"  File not found: {diff_path}")
+            return
+        with open(diff_path, "r", encoding="utf-8") as f:
+            correct_diff = f.read()
+    elif response in ("p", "paste"):
+        print("  Paste diff below (end with 'EOF' on its own line):")
+        lines = []
+        while True:
+            try:
+                line = input("  | ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if line.strip() == "EOF":
+                break
+            lines.append(line)
+        correct_diff = "\n".join(lines)
+    else:
+        print(f"  Unknown option: {response}")
+        return
+
+    if not correct_diff.strip():
+        print("  Empty diff, skipped.")
+        return
 
     new_exp = append_experience(
         agent.moe.experience, snapshot, correct_diff, DATA_DIR
@@ -290,6 +340,7 @@ def _handle_snapshot(
     if success:
         print("\n[Result] Fix successful! No backward pass needed (loss=0).")
     else:
+        print()
         phase4_backward(snapshot, agent, optimizer)
 
 
