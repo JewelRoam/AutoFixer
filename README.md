@@ -20,7 +20,18 @@ ContextSnapshot ──► AutoFixerAgent (StMoeModule) ──► DiffPatch
 | Phase 1 — Distill | Mine bug-fix commits from git history into experience rows |
 | Phase 2 — Forward | Intercept exception → build ContextSnapshot → retrieve + generate patch |
 | Phase 3 — Evaluate | Apply patch to workspace, developer confirms result |
-| Phase 4 — Backward | On failure, collect correct diff and append to experience tensor |
+| Phase 4 — Backward | On failure, collect correct diff → `compute_loss` → `loss.backward()` → `optimizer.step()` updates experience via autograd |
+
+**Autograd pipeline (Phase 4 detail):**
+
+```python
+output, indexes = agent(input_tensor)               # forward
+loss = agent.compute_loss(output, expected_tensor)   # edit-distance loss
+loss.backward()                                      # symbolic gradients → experience
+optimizer.step()                                     # StSGD patches experience tensor
+```
+
+Loss is computed via `get_edit_distance_ratio` (Levenshtein distance). Gradients are symbolic text diffs propagated through `StMoe.backward`. `StSGD` patches the experience tensor in-place — empty slots are auto-filled via cold-start.
 
 ## Setup
 
@@ -56,10 +67,10 @@ The Experience framework uses an **OpenAI-compatible API** with three environmen
 | `LLM_BASE_URL` | Base URL (e.g. `https://api.openai.com/v1`) |
 | `LLM_MODEL` | Model identifier (e.g. `gpt-4`, `claude-sonnet-4-20250514`) |
 
-The framework convention is to store these in `~/.anthropic.sh`:
+The framework convention is to store these in `~/.LLM_config.sh`:
 
 ```bash
-# ~/.anthropic.sh
+# ~/.LLM_config.sh
 export LLM_API_KEY="sk-..."
 export LLM_BASE_URL="https://api.openai.com/v1"
 export LLM_MODEL="gpt-4"
@@ -72,8 +83,14 @@ The REPL script automatically sources this file on startup. Alternatively, you c
 ### Run Tests
 
 ```bash
+# Unit tests
 PYTHONPATH=.:experience pytest tests/ -v
+
+# End-to-end autograd pipeline test (requires LLM credentials)
+PYTHONPATH=.:experience python scripts/test_e2e_autograd.py
 ```
+
+The e2e test validates the full lifecycle: build agent → seed experience → forward (LLM call) → compute loss → backward (symbolic gradient propagation) → optimizer step → verify experience update.
 
 ### Interactive REPL
 
@@ -156,11 +173,12 @@ autofixer/
     model/
         bugfix_agent.py      # AutoFixerAgent wrapping StMoeModule
     optim/
-        apply_patch.py       # Apply unified diff + append experience
+        apply_patch.py       # Apply unified diff to workspace files
     tools/
         git_miner.py         # Git history distillation
 scripts/
     run_repl.py              # Interactive REPL entry point
+    test_e2e_autograd.py     # E2E autograd pipeline smoke test
     demo_buggy.py            # Demo script with a ZeroDivisionError bug
     demo_context.json        # Demo crash context for snap command
 experience/                  # git submodule: lixinqi/Experience
