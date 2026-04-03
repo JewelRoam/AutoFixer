@@ -53,6 +53,9 @@ from experience.symbolic_tensor.optimizer.st_sgd import StSGD
 DATA_DIR = os.path.realpath(os.path.join(PROJECT_ROOT, "data", "shared_experience"))
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# Path to a marker file that records the tensor_uid of the latest experience
+_LATEST_EXP_MARKER = os.path.join(DATA_DIR, ".latest")
+
 # ── readline Tab-completion ────────────────────────────────────────────
 
 _COMMANDS = ["hook", "snap", "distill", "status", "quit"]
@@ -121,6 +124,55 @@ def _load_llm_env_from_shell() -> None:
     os.environ.pop("CLAUDECODE", None)
 
 
+# ── Experience persistence ─────────────────────────────────────────────
+
+def _save_experience_marker(tensor: torch.Tensor) -> None:
+    """Save the tensor_uid of the current experience to the marker file."""
+    with open(_LATEST_EXP_MARKER, "w") as f:
+        f.write(tensor.st_tensor_uid)
+
+
+def _load_saved_experience(agent: AutoFixerAgent) -> bool:
+    """Load previously saved experience from disk into the agent.
+
+    Returns True if experience was loaded, False otherwise.
+    """
+    if not os.path.isfile(_LATEST_EXP_MARKER):
+        return False
+
+    with open(_LATEST_EXP_MARKER, "r") as f:
+        tensor_uid = f.read().strip()
+
+    tensor_dir = os.path.join(DATA_DIR, tensor_uid)
+    shape_file = os.path.join(tensor_dir, "shape")
+    if not os.path.isfile(shape_file):
+        return False
+
+    import json as _json
+    import math
+    with open(shape_file, "r") as f:
+        shape = _json.loads(f.read())
+
+    # Reconstruct tensor: ones-filled with st_* attributes pointing to existing files
+    tensor = torch.ones(shape, dtype=torch.bfloat16)
+    tensor.st_relative_to = DATA_DIR
+    tensor.st_tensor_uid = tensor_uid
+
+    # Verify a few storage files actually exist
+    element_count = math.prod(shape)
+    digits = list(str(0))
+    first_file = os.path.join(tensor_dir, "storage", os.path.join(*digits), "data")
+    if not os.path.isfile(first_file):
+        return False
+
+    # Load into agent via copy_impl (creates a copy in agent's internal dir)
+    from experience.symbolic_tensor.function.st_copy import copy_impl
+    loaded = copy_impl(tensor, agent.moe._experience_dir)
+    agent.moe.experience = loaded
+    agent.moe.experience.requires_grad_(True)
+    return True
+
+
 # ── Phase implementations ─────────────────────────────────────────────
 
 def phase1_distill(repo_path: str, agent: AutoFixerAgent) -> None:
@@ -138,6 +190,7 @@ def phase1_distill(repo_path: str, agent: AutoFixerAgent) -> None:
     loaded = copy_impl(experience, agent.moe._experience_dir)
     agent.moe.experience = loaded
     agent.moe.experience.requires_grad_(True)
+    _save_experience_marker(loaded)
     print(f"  Experience loaded: shape {list(agent.moe.experience.shape)}")
 
 
@@ -259,6 +312,7 @@ def phase4_backward(
     )
     agent.moe.experience = new_exp
     agent.moe.experience.requires_grad_(True)
+    _save_experience_marker(new_exp)
     print(f"  Experience updated: shape {list(agent.moe.experience.shape)}")
 
 
@@ -433,6 +487,12 @@ def main():
         llm_env=llm_env,
     )
     optimizer = StSGD(agent.parameters(), lr=args.lr)
+
+    # Try to load previously saved experience
+    if _load_saved_experience(agent):
+        print(f"  Loaded saved experience: {list(agent.get_experience().shape)}")
+    else:
+        print(f"  No saved experience found, starting fresh: {list(agent.get_experience().shape)}")
 
     if args.distill:
         phase1_distill(args.distill, agent)
