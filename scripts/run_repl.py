@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import os
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -48,6 +49,27 @@ from experience.symbolic_tensor.optimizer.st_sgd import StSGD
 # Persistent experience storage
 DATA_DIR = os.path.realpath(os.path.join(PROJECT_ROOT, "data", "shared_experience"))
 os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def _load_llm_env_from_shell() -> None:
+    """Source ~/.anthropic.sh and inject LLM_* vars into os.environ.
+
+    This follows the Experience framework convention: developers store
+    LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL in ~/.anthropic.sh.
+    """
+    sh_path = os.path.expanduser("~/.anthropic.sh")
+    if not os.path.isfile(sh_path):
+        return
+    result = subprocess.run(
+        ["bash", "-c", f"source {sh_path} && env"],
+        capture_output=True, text=True,
+    )
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, _, val = line.partition("=")
+            if key.startswith("LLM_"):
+                os.environ[key] = val
+    os.environ.pop("CLAUDECODE", None)
 
 
 def phase1_distill(repo_path: str, agent: AutoFixerAgent) -> None:
@@ -160,13 +182,11 @@ def interactive_repl(agent: AutoFixerAgent, optimizer: StSGD) -> None:
                 continue
             install_hook()
             try:
-                subprocess.run(
-                    [sys.executable, script],
-                    check=False,
-                    timeout=120,
-                )
-            except subprocess.TimeoutExpired:
-                print("  Script execution timed out.")
+                runpy.run_path(script, run_name="__main__")
+            except SystemExit:
+                pass
+            except Exception:
+                pass  # excepthook already captured the snapshot
             finally:
                 uninstall_hook()
 
@@ -227,12 +247,29 @@ def main():
     )
     parser.add_argument("--topk", type=int, default=3, help="Top-k experience retrieval")
     parser.add_argument("--lr", type=float, default=1.0, help="Learning rate for StSGD")
+    parser.add_argument(
+        "--llm-model", type=str, default=None,
+        help="LLM model name (overrides LLM_MODEL env var)",
+    )
     args = parser.parse_args()
+
+    # Load LLM credentials from ~/.anthropic.sh (Experience convention)
+    _load_llm_env_from_shell()
+
+    # Build llm_env dict if model is specified
+    llm_env = None
+    if args.llm_model is not None:
+        llm_env = {
+            "LLM_API_KEY": os.environ.get("LLM_API_KEY", ""),
+            "LLM_BASE_URL": os.environ.get("LLM_BASE_URL", ""),
+            "LLM_MODEL": args.llm_model,
+        }
 
     print("Initializing AutoFixerAgent...")
     agent = AutoFixerAgent(
         num_experience_slots=args.num_experience,
         topk=args.topk,
+        llm_env=llm_env,
     )
     optimizer = StSGD(agent.parameters(), lr=args.lr)
 

@@ -1,16 +1,149 @@
 # AutoFixer
 
-基于 [Experience](https://github.com/lixinqi/Experience) 架构的工业级代码修复 Agent。
+Experience-based bug-fix agent built on the [Experience](https://github.com/lixinqi/Experience) symbolic tensor framework.
 
-## 开发
+AutoFixer intercepts Python exceptions at runtime, retrieves similar historical bug-fix experiences via Jaccard similarity, and generates unified diff patches through an LLM. Successful fixes are sedimented back into the experience tensor, enabling continuous learning.
+
+## Architecture
+
+```
+ContextSnapshot ──► AutoFixerAgent (StMoeModule) ──► DiffPatch
+                        │
+                  Experience Tensor [N, 3]
+                  columns = [query, key, value]
+```
+
+**4-Phase Lifecycle:**
+
+| Phase | Description |
+|-------|-------------|
+| Phase 1 — Distill | Mine bug-fix commits from git history into experience rows |
+| Phase 2 — Forward | Intercept exception → build ContextSnapshot → retrieve + generate patch |
+| Phase 3 — Evaluate | Apply patch to workspace, developer confirms result |
+| Phase 4 — Backward | On failure, collect correct diff and append to experience tensor |
+
+## Setup
+
+### Prerequisites
+
+- Python >= 3.10
+- Git
+
+### Install
 
 ```bash
-# 初始化 submodule
-git submodule update --init --recursive
+git clone --recurse-submodules https://github.com/JewelRoam/AutoFixer.git
+cd AutoFixer
 
-# 安装依赖
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
-
-# 运行测试
-pytest -v
 ```
+
+If you already cloned without `--recurse-submodules`:
+
+```bash
+git submodule update --init --recursive
+```
+
+### Configure LLM
+
+The Experience framework uses an **OpenAI-compatible API** with three environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `LLM_API_KEY` | API key for the LLM endpoint |
+| `LLM_BASE_URL` | Base URL (e.g. `https://api.openai.com/v1`) |
+| `LLM_MODEL` | Model identifier (e.g. `gpt-4`, `claude-sonnet-4-20250514`) |
+
+The framework convention is to store these in `~/.anthropic.sh`:
+
+```bash
+# ~/.anthropic.sh
+export LLM_API_KEY="sk-..."
+export LLM_BASE_URL="https://api.openai.com/v1"
+export LLM_MODEL="gpt-4"
+```
+
+The REPL script automatically sources this file on startup. Alternatively, you can export the variables directly in your shell or pass `--llm-model` to override the model name.
+
+## Usage
+
+### Run Tests
+
+```bash
+PYTHONPATH=.:experience pytest tests/ -v
+```
+
+### Interactive REPL
+
+```bash
+PYTHONPATH=.:experience python scripts/run_repl.py
+```
+
+**REPL commands:**
+
+| Command | Description |
+|---------|-------------|
+| `hook` | Run a Python script with exception interception. When the script crashes, AutoFixer captures the full context and enters the fix cycle. |
+| `snap` | Manually input crash context (exception type, traceback, source, local vars). |
+| `quit` | Exit the REPL. |
+
+**CLI options:**
+
+```
+--distill PATH       Distill bug-fix history from a git repo (Phase 1 cold-start)
+--llm-model MODEL    Override LLM model name (e.g. gpt-4)
+--num-experience N   Number of experience slots (default: 32)
+--topk K             Top-k experience retrieval (default: 3)
+--lr LR              Learning rate for StSGD optimizer (default: 1.0)
+```
+
+### Example: Fix a Buggy Script
+
+```bash
+# 1. Start the REPL
+PYTHONPATH=.:experience python scripts/run_repl.py
+
+# 2. In the REPL, run the demo script
+autofixer> hook
+Python script to run: scripts/demo_buggy.py
+
+# 3. AutoFixer captures the ZeroDivisionError, retrieves similar
+#    experiences, and generates a patch via LLM (Phase 2)
+# 4. Review and apply the patch (Phase 3)
+# 5. If the fix fails, provide the correct diff to train (Phase 4)
+```
+
+### Example: Cold-Start from Git History
+
+```bash
+PYTHONPATH=.:experience python scripts/run_repl.py --distill /path/to/your/repo
+```
+
+This scans the repo for commits containing fix/bug/patch keywords and distills them into experience rows before entering the interactive REPL.
+
+## Project Structure
+
+```
+autofixer/
+    context_snapshot.py      # ContextSnapshot dataclass (Viba schema)
+    env_interceptor/
+        frame_inspector.py   # Extract crash context from exception frames
+        sys_excepthook.py    # Global exception hook (install/uninstall)
+    model/
+        bugfix_agent.py      # AutoFixerAgent wrapping StMoeModule
+    optim/
+        apply_patch.py       # Apply unified diff + append experience
+    tools/
+        git_miner.py         # Git history distillation
+scripts/
+    run_repl.py              # Interactive REPL entry point
+    demo_buggy.py            # Demo script with a ZeroDivisionError bug
+experience/                  # git submodule: lixinqi/Experience
+tests/                       # Unit tests (pytest)
+```
+
+## License
+
+See [LICENSE](LICENSE).
