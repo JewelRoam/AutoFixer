@@ -67,10 +67,10 @@ The Experience framework uses an **OpenAI-compatible API** with three environmen
 | `LLM_BASE_URL` | Base URL (e.g. `https://api.openai.com/v1`) |
 | `LLM_MODEL` | Model identifier (e.g. `gpt-4`, `claude-sonnet-4-20250514`) |
 
-The framework convention is to store these in `~/.LLM_config.sh`:
+The framework convention is to store these in `~/.llm_config.sh`:
 
 ```bash
-# ~/.LLM_config.sh
+# ~/.llm_config.sh
 export LLM_API_KEY="sk-..."
 export LLM_BASE_URL="https://api.openai.com/v1"
 export LLM_MODEL="gpt-4"

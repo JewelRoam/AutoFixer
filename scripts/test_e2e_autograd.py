@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end integration test: forward → compute_loss → backward → step.
 
-Requires LLM credentials configured in ~/.LLM_config.sh or environment.
+Requires LLM credentials configured in ~/.llm_config.sh or environment.
 Run:
     PYTHONPATH=.:experience python scripts/test_e2e_autograd.py
 """
@@ -16,7 +16,7 @@ sys.path.insert(0, PROJECT_ROOT)
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "experience"))
 
 # Load LLM env
-sh_path = os.path.expanduser("~/.LLM_config.sh")
+sh_path = os.path.expanduser("~/.llm_config.sh")
 if os.path.isfile(sh_path):
     result = subprocess.run(
         ["bash", "-c", f"source {sh_path} && env"],

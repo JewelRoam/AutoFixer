@@ -104,12 +104,12 @@ def _setup_readline():
 # ── LLM environment ───────────────────────────────────────────────────
 
 def _load_llm_env_from_shell() -> None:
-    """Source ~/.LLM_config.sh and inject LLM_* vars into os.environ.
+    """Source ~/.llm_config.sh and inject LLM_* vars into os.environ.
 
     This follows the Experience framework convention: developers store
-    LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL in ~/.LLM_config.sh.
+    LLM_API_KEY, LLM_BASE_URL, and LLM_MODEL in ~/.llm_config.sh.
     """
-    sh_path = os.path.expanduser("~/.LLM_config.sh")
+    sh_path = os.path.expanduser("~/.llm_config.sh")
     if not os.path.isfile(sh_path):
         return
     result = subprocess.run(
@@ -494,7 +494,7 @@ def main():
     )
     args = parser.parse_args()
 
-    # Load LLM credentials from ~/.LLM_config.sh (Experience convention)
+    # Load LLM credentials from ~/.llm_config.sh (Experience convention)
     _load_llm_env_from_shell()
 
     # Build llm_env dict if model is specified
