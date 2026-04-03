@@ -230,7 +230,9 @@ def _cmd_hook(arg: str, agent: AutoFixerAgent, optimizer: StSGD) -> None:
     except SystemExit:
         pass
     except Exception:
-        pass  # excepthook already captured the snapshot
+        # runpy catches exceptions before they reach sys.excepthook,
+        # so we trigger it manually to build the ContextSnapshot.
+        sys.excepthook(*sys.exc_info())
     finally:
         uninstall_hook()
 
@@ -319,25 +321,28 @@ def interactive_repl(agent: AutoFixerAgent, optimizer: StSGD) -> None:
         cmd = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
 
-        if cmd == "quit":
-            break
-        elif cmd == "hook":
-            _cmd_hook(arg, agent, optimizer)
-        elif cmd == "snap":
-            _cmd_snap(arg, agent, optimizer)
-        elif cmd == "distill":
-            _cmd_distill(arg, agent)
-        elif cmd == "status":
-            exp = agent.get_experience()
-            print(f"  Experience shape: {list(exp.shape)}")
-            print(f"  Storage: {DATA_DIR}")
-            llm_key = os.environ.get("LLM_API_KEY", "")
-            llm_model = os.environ.get("LLM_MODEL", "(not set)")
-            print(f"  LLM model: {llm_model}")
-            print(f"  LLM API key: {'***' + llm_key[-4:] if len(llm_key) > 4 else '(not set)'}")
-        else:
-            print(f"  Unknown command: {cmd}")
-            print("  Type a command or press Tab for completion.")
+        try:
+            if cmd == "quit":
+                break
+            elif cmd == "hook":
+                _cmd_hook(arg, agent, optimizer)
+            elif cmd == "snap":
+                _cmd_snap(arg, agent, optimizer)
+            elif cmd == "distill":
+                _cmd_distill(arg, agent)
+            elif cmd == "status":
+                exp = agent.get_experience()
+                print(f"  Experience shape: {list(exp.shape)}")
+                print(f"  Storage: {DATA_DIR}")
+                llm_key = os.environ.get("LLM_API_KEY", "")
+                llm_model = os.environ.get("LLM_MODEL", "(not set)")
+                print(f"  LLM model: {llm_model}")
+                print(f"  LLM API key: {'***' + llm_key[-4:] if len(llm_key) > 4 else '(not set)'}")
+            else:
+                print(f"  Unknown command: {cmd}")
+                print("  Type a command or press Tab for completion.")
+        except KeyboardInterrupt:
+            print("\n  Interrupted.")
 
 
 def main():
