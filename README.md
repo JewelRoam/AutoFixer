@@ -81,12 +81,14 @@ PYTHONPATH=.:experience pytest tests/ -v
 PYTHONPATH=.:experience python scripts/run_repl.py
 ```
 
-**REPL commands:**
+**REPL commands:** (Tab completes both commands and file paths)
 
 | Command | Description |
 |---------|-------------|
-| `hook` | Run a Python script with exception interception. When the script crashes, AutoFixer captures the full context and enters the fix cycle. |
-| `snap` | Manually input crash context (exception type, traceback, source, local vars). |
+| `hook <script.py>` | Run a Python script with exception interception. When the script crashes, AutoFixer captures the full context and enters the fix cycle. |
+| `snap <context.json>` | Load crash context from a JSON file (see `scripts/demo_context.json` for format). |
+| `distill <repo_path>` | Mine bug-fix history from a git repo into experience tensor. |
+| `status` | Show agent experience shape, storage path, and LLM config. |
 | `quit` | Exit the REPL. |
 
 **CLI options:**
@@ -105,14 +107,34 @@ PYTHONPATH=.:experience python scripts/run_repl.py
 # 1. Start the REPL
 PYTHONPATH=.:experience python scripts/run_repl.py
 
-# 2. In the REPL, run the demo script
-autofixer> hook
-Python script to run: scripts/demo_buggy.py
+# 2. Use Tab completion to locate and run the demo script
+autofixer> hook scripts/demo_buggy.py
+#          ^^^^  ^^^^^^^ Tab completes file paths
 
 # 3. AutoFixer captures the ZeroDivisionError, retrieves similar
 #    experiences, and generates a patch via LLM (Phase 2)
 # 4. Review and apply the patch (Phase 3)
 # 5. If the fix fails, provide the correct diff to train (Phase 4)
+```
+
+### Example: Load Crash Context from JSON
+
+```bash
+# Use snap with a pre-built context file
+autofixer> snap scripts/demo_context.json
+```
+
+The JSON format matches ContextSnapshot fields:
+
+```json
+{
+  "exception_type": "ZeroDivisionError",
+  "traceback": "...",
+  "target_file": "scripts/demo_buggy.py",
+  "crash_line_num": 8,
+  "source_code": "...",
+  "local_vars": "{\"count\": 0}"
+}
 ```
 
 ### Example: Cold-Start from Git History
@@ -140,6 +162,7 @@ autofixer/
 scripts/
     run_repl.py              # Interactive REPL entry point
     demo_buggy.py            # Demo script with a ZeroDivisionError bug
+    demo_context.json        # Demo crash context for snap command
 experience/                  # git submodule: lixinqi/Experience
 tests/                       # Unit tests (pytest)
 ```

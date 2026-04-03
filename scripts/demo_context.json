@@ -1,0 +1,8 @@
+{
+  "exception_type": "ZeroDivisionError",
+  "traceback": "Traceback (most recent call last):\n  File \"scripts/demo_buggy.py\", line 16, in <module>\n    print(f\"Average of {empty}: {compute_average(empty)}\")\n  File \"scripts/demo_buggy.py\", line 8, in compute_average\n    return total / count\nZeroDivisionError: division by zero",
+  "target_file": "scripts/demo_buggy.py",
+  "crash_line_num": 8,
+  "source_code": "   4     def compute_average(numbers):\n   5         total = sum(numbers)\n   6         count = len(numbers)\n   7         # Bug: no guard for empty list\n   8 >>>     return total / count",
+  "local_vars": "{\"numbers\": [], \"total\": 0, \"count\": 0}"
+}

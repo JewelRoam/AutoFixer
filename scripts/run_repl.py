@@ -16,7 +16,10 @@ Usage:
 """
 
 import argparse
+import glob as globmod
+import json
 import os
+import readline
 import runpy
 import subprocess
 import sys
@@ -50,6 +53,52 @@ from experience.symbolic_tensor.optimizer.st_sgd import StSGD
 DATA_DIR = os.path.realpath(os.path.join(PROJECT_ROOT, "data", "shared_experience"))
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# ── readline Tab-completion ────────────────────────────────────────────
+
+_COMMANDS = ["hook", "snap", "distill", "status", "quit"]
+
+
+class _Completer:
+    """Tab completer: commands for first token, file paths for arguments."""
+
+    def __init__(self):
+        self._matches = []
+
+    def complete(self, text, state):
+        if state == 0:
+            line = readline.get_line_buffer().lstrip()
+            begin = readline.get_begidx()
+
+            if begin == 0 or " " not in line:
+                # Completing the command name
+                self._matches = [c + " " for c in _COMMANDS if c.startswith(text)]
+            else:
+                # Completing a file path argument
+                self._matches = []
+                for path in globmod.glob(text + "*"):
+                    if os.path.isdir(path):
+                        self._matches.append(path + os.sep)
+                    else:
+                        self._matches.append(path + " ")
+        if state < len(self._matches):
+            return self._matches[state]
+        return None
+
+
+def _setup_readline():
+    """Configure readline with tab completion and history."""
+    comp = _Completer()
+    readline.set_completer(comp.complete)
+    # macOS uses libedit which needs a different syntax
+    if "libedit" in readline.__doc__:
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+    # Treat / as part of the word so file paths complete correctly
+    readline.set_completer_delims(" \t\n;")
+
+
+# ── LLM environment ───────────────────────────────────────────────────
 
 def _load_llm_env_from_shell() -> None:
     """Source ~/.anthropic.sh and inject LLM_* vars into os.environ.
@@ -71,6 +120,8 @@ def _load_llm_env_from_shell() -> None:
                 os.environ[key] = val
     os.environ.pop("CLAUDECODE", None)
 
+
+# ── Phase implementations ─────────────────────────────────────────────
 
 def phase1_distill(repo_path: str, agent: AutoFixerAgent) -> None:
     """Phase 1: Distill git history into experience tensor (cold-start)."""
@@ -138,17 +189,16 @@ def phase4_backward(
 ) -> None:
     """Phase 4: Backward pass — sediment experience from developer's fix."""
     print("[Phase 4] Recording experience from this fix attempt...")
-    correct_diff = input(
-        "Paste the correct diff (end with EOF on a new line), or 'skip' to skip:\n"
-    )
-    if correct_diff.strip().lower() == "skip":
+    print("  Paste the correct diff (end with EOF on a new line), or 'skip':")
+    first_line = input("  ").strip()
+    if first_line.lower() == "skip":
         print("  Skipped experience recording.")
         return
 
     # Collect until EOF
-    lines = [correct_diff]
+    lines = [first_line]
     while True:
-        line = input()
+        line = input("  ")
         if line.strip() == "EOF":
             break
         lines.append(line)
@@ -162,59 +212,65 @@ def phase4_backward(
     print(f"  Experience updated: shape {list(agent.moe.experience.shape)}")
 
 
-def interactive_repl(agent: AutoFixerAgent, optimizer: StSGD) -> None:
-    """Main REPL loop for interactive bug fixing."""
-    print("\n=== AutoFixer REPL ===")
-    print("Commands:")
-    print("  hook   — Install exception hook on a Python script")
-    print("  snap   — Manually input a crash context")
-    print("  quit   — Exit")
+# ── Command handlers ──────────────────────────────────────────────────
 
-    while True:
-        cmd = input("\nautofixer> ").strip().lower()
+def _cmd_hook(arg: str, agent: AutoFixerAgent, optimizer: StSGD) -> None:
+    """hook <script.py> — Run a script and intercept exceptions."""
+    script = arg.strip()
+    if not script:
+        print("  Usage: hook <script.py>")
+        return
+    if not os.path.isfile(script):
+        print(f"  File not found: {script}")
+        return
 
-        if cmd == "quit":
-            break
-        elif cmd == "hook":
-            script = input("Python script to run: ").strip()
-            if not os.path.isfile(script):
-                print(f"  File not found: {script}")
-                continue
-            install_hook()
-            try:
-                runpy.run_path(script, run_name="__main__")
-            except SystemExit:
-                pass
-            except Exception:
-                pass  # excepthook already captured the snapshot
-            finally:
-                uninstall_hook()
+    install_hook()
+    try:
+        runpy.run_path(script, run_name="__main__")
+    except SystemExit:
+        pass
+    except Exception:
+        pass  # excepthook already captured the snapshot
+    finally:
+        uninstall_hook()
 
-            snapshot = get_last_snapshot()
-            if snapshot is None:
-                print("  No exception captured.")
-                continue
-            _handle_snapshot(snapshot, agent, optimizer)
+    snapshot = get_last_snapshot()
+    if snapshot is None:
+        print("  No exception captured.")
+        return
+    _handle_snapshot(snapshot, agent, optimizer)
 
-        elif cmd == "snap":
-            print("Enter crash details:")
-            exc_type = input("  Exception type: ").strip()
-            tb = input("  Traceback (one line): ").strip()
-            target = input("  Target file: ").strip()
-            line_num = int(input("  Crash line number: ").strip())
-            source = input("  Source code snippet: ").strip()
-            local_vars = input("  Local vars (JSON): ").strip()
-            snapshot = ContextSnapshot(
-                exception_type=exc_type,
-                traceback=tb,
-                target_file=target,
-                crash_line_num=line_num,
-                source_code=source,
-                local_vars=local_vars,
-            )
-            _handle_snapshot(snapshot, agent, optimizer)
-        else:
-            print(f"  Unknown command: {cmd}")
+
+def _cmd_snap(arg: str, agent: AutoFixerAgent, optimizer: StSGD) -> None:
+    """snap <context.json> — Load crash context from a JSON file."""
+    path = arg.strip()
+    if not path:
+        print("  Usage: snap <context.json>")
+        print("  JSON fields: exception_type, traceback, target_file,")
+        print("               crash_line_num, source_code, local_vars")
+        return
+    if not os.path.isfile(path):
+        print(f"  File not found: {path}")
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            snapshot = ContextSnapshot.from_json(f.read())
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        print(f"  Invalid context JSON: {e}")
+        return
+    _handle_snapshot(snapshot, agent, optimizer)
+
+
+def _cmd_distill(arg: str, agent: AutoFixerAgent) -> None:
+    """distill <repo_path> — Mine bug-fix history from a git repo."""
+    repo = arg.strip()
+    if not repo:
+        print("  Usage: distill <repo_path>")
+        return
+    if not os.path.isdir(repo):
+        print(f"  Not a directory: {repo}")
+        return
+    phase1_distill(repo, agent)
 
 
 def _handle_snapshot(
@@ -233,6 +289,55 @@ def _handle_snapshot(
         print("\n[Result] Fix successful! No backward pass needed (loss=0).")
     else:
         phase4_backward(snapshot, agent, optimizer)
+
+
+# ── REPL ──────────────────────────────────────────────────────────────
+
+def interactive_repl(agent: AutoFixerAgent, optimizer: StSGD) -> None:
+    """Main REPL loop for interactive bug fixing."""
+    _setup_readline()
+
+    print("\n=== AutoFixer REPL ===")
+    print("Commands:  (Tab completes commands and file paths)")
+    print("  hook <script.py>     Run script, intercept exceptions")
+    print("  snap <context.json>  Load crash context from JSON file")
+    print("  distill <repo_path>  Mine bug-fix history from a git repo")
+    print("  status               Show agent experience info")
+    print("  quit                 Exit")
+
+    while True:
+        try:
+            line = input("\nautofixer> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if not line:
+            continue
+
+        parts = line.split(None, 1)
+        cmd = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
+
+        if cmd == "quit":
+            break
+        elif cmd == "hook":
+            _cmd_hook(arg, agent, optimizer)
+        elif cmd == "snap":
+            _cmd_snap(arg, agent, optimizer)
+        elif cmd == "distill":
+            _cmd_distill(arg, agent)
+        elif cmd == "status":
+            exp = agent.get_experience()
+            print(f"  Experience shape: {list(exp.shape)}")
+            print(f"  Storage: {DATA_DIR}")
+            llm_key = os.environ.get("LLM_API_KEY", "")
+            llm_model = os.environ.get("LLM_MODEL", "(not set)")
+            print(f"  LLM model: {llm_model}")
+            print(f"  LLM API key: {'***' + llm_key[-4:] if len(llm_key) > 4 else '(not set)'}")
+        else:
+            print(f"  Unknown command: {cmd}")
+            print("  Type a command or press Tab for completion.")
 
 
 def main():
