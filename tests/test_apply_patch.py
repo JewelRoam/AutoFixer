@@ -59,7 +59,8 @@ class TestWriteExperience:
         from autofixer.optim.apply_patch import append_experience
         from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as raw_tmpdir:
+            tmpdir = os.path.realpath(raw_tmpdir)
             # Start with 1-entry experience
             initial = make_tensor(
                 [["query_kw", "old key text", "old value text"]],
@@ -93,7 +94,8 @@ class TestExperienceLifecycle:
         from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
         from experience.symbolic_tensor.tensor_util.pack_tensor import pack_tensor
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as raw_tmpdir:
+            tmpdir = os.path.realpath(raw_tmpdir)
             initial = make_tensor(
                 [["initial_query", "initial_key", "initial_value"]],
                 tmpdir,
