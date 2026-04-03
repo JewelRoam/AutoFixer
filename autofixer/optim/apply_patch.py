@@ -6,6 +6,7 @@ Handles:
 """
 
 import os
+import re
 import subprocess
 import tempfile
 from typing import Optional
@@ -13,7 +14,6 @@ from typing import Optional
 import torch
 
 from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
-from experience.symbolic_tensor.tensor_util.make_none_tensor import make_none_tensor
 from experience.symbolic_tensor.tensor_util.slice_view import slice_view
 from experience.symbolic_tensor.tensor_util.assign_tensor import assign_tensor
 
@@ -67,7 +67,6 @@ def _generate_query_keywords(snapshot: ContextSnapshot, diff_patch: str) -> str:
     keywords.add(snapshot.exception_type)
 
     # Extract identifiers from source code (simple heuristic)
-    import re
     for word in re.findall(r"[a-zA-Z_]\w+", snapshot.source_code):
         if len(word) > 2:
             keywords.add(word)

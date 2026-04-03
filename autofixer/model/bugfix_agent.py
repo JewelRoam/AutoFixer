@@ -15,7 +15,6 @@ import torch.nn as nn
 
 from experience.symbolic_tensor.module.st_moe import StMoeModule
 from experience.symbolic_tensor.tensor_util.make_tensor import make_tensor
-from experience.symbolic_tensor.tensor_util.make_none_tensor import make_none_tensor
 
 from autofixer.context_snapshot import ContextSnapshot
 

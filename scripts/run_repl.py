@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import os
+import subprocess
 import sys
 import tempfile
 
@@ -159,11 +160,13 @@ def interactive_repl(agent: AutoFixerAgent, optimizer: StSGD) -> None:
                 continue
             install_hook()
             try:
-                exec(open(script).read(), {"__name__": "__main__"})
-            except SystemExit:
-                pass
-            except Exception:
-                pass
+                subprocess.run(
+                    [sys.executable, script],
+                    check=False,
+                    timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                print("  Script execution timed out.")
             finally:
                 uninstall_hook()
 
