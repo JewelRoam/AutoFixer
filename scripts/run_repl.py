@@ -126,7 +126,7 @@ def _load_llm_env_from_shell() -> None:
 def phase1_distill(repo_path: str, agent: AutoFixerAgent) -> None:
     """Phase 1: Distill git history into experience tensor (cold-start)."""
     print(f"[Phase 1] Distilling bug-fix history from {repo_path}...")
-    rows = distill_repo_to_experience_rows(repo_path)
+    rows = distill_repo_to_experience_rows(repo_path, log=print)
     if not rows:
         print("  No bug-fix commits found.")
         return

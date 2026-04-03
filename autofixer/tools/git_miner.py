@@ -8,7 +8,8 @@ experience-compatible [query, key, value] rows.
 import os
 import re
 import subprocess
-from typing import Dict, List, Optional
+import sys
+from typing import Callable, Dict, List, Optional
 
 
 def _run_git(repo_path: str, *args: str) -> str:
@@ -95,24 +96,42 @@ def _generate_query_from_diff(diff_text: str, message: str) -> str:
     return "\n".join(sorted(keywords))
 
 
-def distill_repo_to_experience_rows(repo_path: str) -> List[List[str]]:
+def distill_repo_to_experience_rows(
+    repo_path: str,
+    log: Callable[..., None] = lambda *a, **kw: print(*a, **kw, file=sys.stderr),
+) -> List[List[str]]:
     """Distill a git repo's bug-fix history into experience rows.
+
+    Args:
+        repo_path: Path to the git repository.
+        log: Callback for progress messages. Defaults to stderr printing.
+            Pass ``None`` to suppress all output.
 
     Returns a list of [query, key, value] string triples where:
     - query: keywords extracted from commit message + diff
     - key: pre-fix source code context
     - value: the fix diff (unified format)
     """
+    if log is None:
+        log = lambda *a, **kw: None
+
+    log(f"  Scanning git log for bug-fix keywords...")
     commits = find_bugfix_commits(repo_path)
+    log(f"  Found {len(commits)} candidate commit(s).")
     rows = []
 
-    for commit in commits:
+    for i, commit in enumerate(commits, 1):
+        short_hash = commit["hash"][:8]
+        log(f"  [{i}/{len(commits)}] {short_hash} {commit['message'][:60]}")
+
         diff = extract_commit_diff(repo_path, commit["hash"])
         if not diff:
+            log(f"    Skipped (empty diff)")
             continue
 
         # Get pre-commit code for context (key)
         changed_files = _extract_changed_files(repo_path, commit["hash"])
+        log(f"    {len(changed_files)} file(s) changed")
         pre_code_parts = []
         for filepath in changed_files:
             try:
@@ -123,6 +142,7 @@ def distill_repo_to_experience_rows(repo_path: str) -> List[List[str]]:
                 continue
 
         if not pre_code_parts:
+            log(f"    Skipped (no pre-commit code)")
             continue
 
         key = "\n\n".join(pre_code_parts)
@@ -130,5 +150,9 @@ def distill_repo_to_experience_rows(repo_path: str) -> List[List[str]]:
         query = _generate_query_from_diff(diff, commit["message"])
 
         rows.append([query, key, value])
+        log(f"    -> experience row added ({len(query)} chars query, "
+            f"{len(key)} chars key, {len(value)} chars value)")
 
+    log(f"  Distillation complete: {len(rows)} experience row(s) from "
+        f"{len(commits)} candidate(s).")
     return rows
