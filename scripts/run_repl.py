@@ -204,7 +204,6 @@ def phase2_forward(snapshot: ContextSnapshot, agent: AutoFixerAgent) -> tuple:
     print(f"  Experience: {list(exp.shape)} ({exp.shape[0]} entries)")
 
     tmpdir = tempfile.mkdtemp()
-    tmpdir = os.path.realpath(tmpdir)
     input_tensor = snapshot_to_tensor(snapshot, relative_to=tmpdir)
 
     # Show what we're sending to the model
@@ -269,7 +268,6 @@ def phase3_evaluate(
 
 
 def phase4_backward(
-    snapshot: ContextSnapshot,
     output_tensor: torch.Tensor,
     agent: AutoFixerAgent,
     optimizer: StSGD,
@@ -423,7 +421,7 @@ def _handle_snapshot(
         print("\n[Result] Fix successful! No backward pass needed (loss=0).")
     else:
         print()
-        phase4_backward(snapshot, output_tensor, agent, optimizer, tmpdir)
+        phase4_backward(output_tensor, agent, optimizer, tmpdir)
 
 
 # ── REPL ──────────────────────────────────────────────────────────────

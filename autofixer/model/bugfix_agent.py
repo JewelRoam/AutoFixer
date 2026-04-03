@@ -121,6 +121,11 @@ class AutoFixerAgent(nn.Module):
             topk=topk,
             llm_env=llm_env,
         )
+        # macOS: /var → /private/var symlink causes slice_view's relative
+        # symlinks to resolve to /private/private/... during backward.
+        # Canonicalize once at construction so all downstream tensors inherit it.
+        self.moe._experience_dir = os.path.realpath(self.moe._experience_dir)
+        self.moe.experience.st_relative_to = self.moe._experience_dir
 
     def get_experience(self) -> torch.Tensor:
         """Return the underlying experience tensor."""
